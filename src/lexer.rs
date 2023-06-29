@@ -1,7 +1,7 @@
 use crate::token::{Position, Token, TokenKind, TokenKindError};
 
 /// Tokenizer
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Lexer<'a> {
     /// Current character
     c: Option<char>,
@@ -9,26 +9,10 @@ pub struct Lexer<'a> {
     text: &'a str,
     /// `self.text`'s current position index(0 based index)
     idx: usize,
-    /// `self.text`'s current position line(1 based index)
-    line: usize,
     /// `self.text`'s current position column.(0 based index)
     col: usize,
-    /// The name of the target file of the lexer constructor (new method).
-    file_name: &'a str,
-}
-
-impl Default for Lexer<'_> {
-    fn default() -> Self {
-        let Position { line, file_name } = Position::default();
-        Self {
-            c: Default::default(),
-            text: Default::default(),
-            idx: Default::default(),
-            line,
-            col: Default::default(),
-            file_name,
-        }
-    }
+    /// Reading text position
+    pos: Position<'a>,
 }
 
 impl<'a> Lexer<'a> {
@@ -62,12 +46,15 @@ impl<'a> Lexer<'a> {
     pub fn new(file_name: &'a str, text: &'a str) -> Self {
         let c = match text.is_empty() {
             true => None,
-            false => text.chars().nth(0),
+            false => text.chars().next(),
         };
         Self {
             c,
             text,
-            file_name,
+            pos: Position {
+                file_name,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -79,7 +66,7 @@ impl<'a> Lexer<'a> {
 
         if self.c == Some('\n') {
             self.col += 0;
-            self.line += 1;
+            self.pos.line += 1;
         };
 
         self.c = self.peek(0);
@@ -96,10 +83,7 @@ impl<'a> Lexer<'a> {
     }
 
     fn current_pos(&self) -> Position {
-        Position {
-            line: self.line,
-            file_name: self.file_name,
-        }
+        self.pos.clone()
     }
 
     /// Advance position until the end of the line.
@@ -133,12 +117,12 @@ impl<'a> Lexer<'a> {
                 self.advance(); // consume '0'
                 self.advance(); // consume 'x'
 
-                while Some(true) == self.c.map(|c| c.is_digit(16)) {
+                while Some(true) == self.c.map(|c| c.is_ascii_hexdigit()) {
                     self.advance();
                 }
             }
             false => {
-                while Some(true) == self.c.map(|c| c.is_digit(10)) {
+                while Some(true) == self.c.map(|c| c.is_ascii_digit()) {
                     self.advance();
                 }
             }
@@ -165,7 +149,7 @@ impl<'a> Lexer<'a> {
 
         let start = self.idx;
 
-        while Some(true) == self.c.map(|c| is_ident(c)) {
+        while Some(true) == self.c.map(is_ident) {
             self.advance();
         }
 
@@ -236,6 +220,43 @@ impl<'a> Lexer<'a> {
             kind: TokenKind::Eof,
             pos: self.current_pos(),
         })
+    }
+
+    pub fn to_vec(&mut self) -> Result<Vec<Token>, LexerError> {
+        let mut res = Vec::new();
+        while let Some(c) = self.c {
+            // non return matches
+            match c {
+                c if c.is_whitespace() => {
+                    self.advance();
+                    continue;
+                }
+                '#' => {
+                    self.skip_comment();
+                    continue;
+                }
+                _ => {}
+            };
+
+            let tok =match c {
+                    '0'..='9' => self.read_number(),
+                    'A'..='Z' | 'a'..='z' | '_' | '.' => self.read_ident(),
+                    '"' => self.read_string(),
+                    ',' | ':' | '(' | ')' | '+' | '-' | '*' | '/' | '$' | '%' => {
+                        self.single_letter_token(c)
+                        .expect("Non error. Reason: We are filtering out failed cast characters before calling this method.")
+                    }
+                    _ => return Err(LexerError::UnexpectedToken(c, self.current_pos())),
+                };
+        }
+
+        res.push(Token {
+            lit: "\0",
+            kind: TokenKind::Eof,
+            pos: self.current_pos(),
+        });
+
+        Ok(res)
     }
 }
 
@@ -311,7 +332,7 @@ _start:
     }
 
     #[test]
-    fn should_cast_with_known_char() {
+    fn should_cast_known_char() {
         let mut lexer = Lexer::default();
         assert_eq!(
             lexer.single_letter_token('%'),
@@ -324,7 +345,7 @@ _start:
     }
 
     #[test]
-    fn should_err_cast_with_unknown_char() {
+    fn should_err_cast_unknown_char() {
         let mut lexer = Lexer::default();
         assert_eq!(
             lexer.single_letter_token('c'),

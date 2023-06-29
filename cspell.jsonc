@@ -1,9 +1,21 @@
 {
   "words": [
+    "byteorder",
+    "filesz",
+    "instrs",
+    "memsz",
+    "paddr",
+    "rela",
+    "repr",
+    "rustfmt",
+    "shstrtab",
+    "strtab",
     "symlbol",
+    "symtab",
     "syscall",
     "thiserror",
     "trgt",
+    "vaddr",
     "varcode"
   ]
 }
