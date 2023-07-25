@@ -1,0 +1,14 @@
+pub(crate) const MOD_INDIRECTION_WITH_NO_DISP: u8 = 0;
+pub(crate) const MOD_INDIRECTION_WITH_DISP8: u8 = 1;
+pub(crate) const MOD_INDIRECTION_WITH_DISP32: u8 = 2;
+pub(crate) const MOD_REGI: u8 = 3;
+pub(crate) const REX_W: u8 = 0x48;
+pub(crate) const OPERAND_SIZE_PREFIX16: u8 = 0x66;
+pub(crate) const SLASH_0: usize = 0;
+pub(crate) const SLASH_1: usize = 1;
+pub(crate) const SLASH_2: usize = 2;
+pub(crate) const SLASH_3: usize = 3;
+pub(crate) const SLASH_4: usize = 4;
+pub(crate) const SLASH_5: usize = 5;
+pub(crate) const SLASH_6: usize = 6;
+pub(crate) const SLASH_7: usize = 7;

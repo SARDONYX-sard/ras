@@ -23,11 +23,11 @@ fn section_flags(flags: &str) -> u64 {
 fn change_symbol_binding(instr: &Instr, binding: u8) {
     let mut user_symbols = USER_DEFINED_SYMBOLS.lock().unwrap();
     let cache_instr = user_symbols.get_mut(instr.symbol_name).unwrap_or_else(|| {
-        panic!("{} undefined symbol '{}'", instr.pos, instr.symbol_name);
+        panic!("{} undefined symbol '{}'", instr.loc, instr.symbol_name);
     });
 
     if binding == STB_GLOBAL && cache_instr.kind == InstrKind::Section {
-        panic!("{} sections cannot be global", instr.pos);
+        panic!("{} sections cannot be global", instr.loc);
     }
 
     cache_instr.binding = binding;
@@ -36,7 +36,7 @@ fn change_symbol_binding(instr: &Instr, binding: u8) {
 fn change_symbol_visibility(instr: &Instr, visibility: u8) {
     let mut bindings = USER_DEFINED_SYMBOLS.lock().unwrap();
     let s = bindings.get_mut(instr.symbol_name).unwrap_or_else(|| {
-        panic!("{} undefined symbol '{}'", instr.pos, instr.symbol_name);
+        panic!("{} undefined symbol '{}'", instr.loc, instr.symbol_name);
     });
 
     s.visibility = visibility;

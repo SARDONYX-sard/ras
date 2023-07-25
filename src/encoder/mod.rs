@@ -1,236 +1,50 @@
-mod addr;
-mod stack_op;
+// mod addr;
+// mod stack_op;
+pub mod arch;
 
-use std::{collections::HashMap, process::exit};
-
-use crate::{
-    elf::STT_SECTION,
-    lexer::Lexer,
-    token::{Position, Token, TokenKind, TokenKindError},
+use self::arch::x86_64::{
+    instructions::InstrKind,
+    registers::{get_reg_info_by, get_xmm_by},
+    Expr,
 };
+use crate::error::{bail, Result};
+use crate::lexer::{Location, Token, TokenKind};
+use std::collections::HashMap;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum InstrKind {
-    #[default]
-    None,
-    Section,
-    Global,
-    Local,
-    Hidden,
-    Internal,
-    Protected,
-    String,
-    Byte,
-    Word,
-    Long,
-    Quad,
-    Add,
-    Sub,
-    InstrOr,
-    Adc,
-    Sbb,
-    Xor,
-    And,
-    Imul,
-    Idiv,
-    Div,
-    Neg,
-    Mul,
-    Lea,
-    Mov,
-    Movabsq,
-    Rep,
-    Test,
-    Movzx,
-    Movsx,
-    Not,
-    Cqto,
-    Cltq,
-    Cltd,
-    Cwtl,
-    Cmp,
-    Shl,
-    Shr,
-    Sar,
-    Sal,
-    Pop,
-    Push,
-    Call,
-    Seto,
-    Setno,
-    Setb,
-    Setnb,
-    Setae,
-    Setbe,
-    Seta,
-    Setpo,
-    Setl,
-    Setg,
-    Setle,
-    Setge,
-    Sete,
-    Setne,
-    Jmp,
-    Jne,
-    Je,
-    Jl,
-    Jg,
-    Jle,
-    Jge,
-    Jbe,
-    Jnb,
-    Jnbe,
-    Jp,
-    Ja,
-    Js,
-    Jb,
-    Jns,
-    Ret,
-    Syscall,
-    Nop,
-    Hlt,
-    Leave,
-    Cmovs,
-    Cmovns,
-    Cmovge,
-    Cvttss2sil,
-    Cvtsi2ssq,
-    Cvtsi2sdq,
-    Cvtsd2ss,
-    Cvtss2sd,
-    Movss,
-    Movsd,
-    Movd,
-    Ucomiss,
-    Ucomisd,
-    Comisd,
-    Comiss,
-    Subss,
-    Subsd,
-    Addss,
-    Addsd,
-    Mulss,
-    Mulsd,
-    Divss,
-    Divsd,
-    Movaps,
-    Movups,
-    Xorpd,
-    Xorps,
-    Pxor,
-    Label,
-}
+macro_rules! bail {
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Encoder<'a> {
-    /// current token
-    tok: Token<'a>,
-    lexer: Lexer<'a>,
-    current_section: &'a str,
-    /// map with section name as keys and instruction list as value
-    instrs: HashMap<&'a str, Vec<Instr<'a>>>,
+    ($loc:expr, $($tt:tt)*) => {{
+        let err = $crate::error::format_err!($($tt)*)
+            .with_location($loc);
+        return Err(err);
+    }};
 }
 
 /// Instruction information
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Instr<'a> {
-    pub kind: InstrKind,
-    pub code: Vec<u8>,
-    pub symbol_name: &'a str,
-    pub flags: &'a str,
-    pub addr: usize,
-    pub binding: u8,
+pub struct Instr {
+    pub(crate) kind: InstrKind,
+    pub(crate) code: Vec<u8>,
+    pub(crate) symbol_name: String,
+    pub(crate) flags: String,
+    pub(crate) addr: usize,
+    pub(crate) binding: u8,
     /// STV_DEFAULT, STV_INTERNAL, STV_HIDDEN, STV_PROTECTED
-    pub visibility: u8,
-    pub symbol_type: u8,
-    pub section: &'a str,
-    pub is_jmp_or_call: bool,
-    pub pos: Position<'a>,
+    pub(crate) visibility: u8,
+    pub(crate) symbol_type: u8,
+    pub(crate) section: String,
+    pub(crate) is_jmp_or_call: bool,
+    pub(crate) loc: Location,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Rela<'a> {
-    pub uses: &'a str,
-    pub instr: Instr<'a>,
+pub struct Rela {
+    pub uses: String,
+    pub instr: Instr,
     pub offset: usize,
     pub rtype: u64,
     pub adjust: i32,
     pub is_already_resolved: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Expr<'a> {
-    Ident(Ident<'a>),
-    Immediate(Immediate<'a>),
-    Register(Register<'a>),
-    Indirection(Indirection<'a>),
-    Number(Number<'a>),
-    Binop(Binop<'a>),
-    Neg(Neg<'a>),
-    Xmm(Xmm<'a>),
-    Star(Star<'a>),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Number<'a> {
-    lit: &'a str,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Star<'a> {
-    regi: Register<'a>,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Binop<'a> {
-    left_hs: Box<Expr<'a>>,
-    right_hs: Box<Expr<'a>>,
-    op: TokenKind,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Neg<'a> {
-    expr: Box<Expr<'a>>,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Register<'a> {
-    lit: String,
-    size: DataSize,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Xmm<'a> {
-    lit: &'a str,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Immediate<'a> {
-    expr: Box<Expr<'a>>,
-    pos: Position<'a>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Indirection<'a> {
-    disp: Box<Expr<'a>>,
-    base: Register<'a>,
-    index: Register<'a>,
-    scale: Box<Expr<'a>>,
-    pos: Position<'a>,
-    has_base: bool,
-    has_index_scale: bool,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Ident<'a> {
-    lit: &'a str,
-    pos: Position<'a>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
@@ -240,147 +54,191 @@ pub struct UserDefinedSection {
     pub flags: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum DataSize {
-    SuffixByte,
-    SuffixWord,
-    SuffixLong,
-    SuffixQuad,
-    SuffixSingle,
-    SuffixDouble,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Encoder {
+    tokens: Vec<Token>,
+    token_idx: usize,
+    current_section_name: String,
+    /// All instructions, sections, symbols, directives
+    instrs: Vec<Instr>,
+    user_defined_symbols: HashMap<String, Instr>,
+    user_defined_sections: HashMap<String, UserDefinedSection>,
 }
 
-const MOD_INDIRECTION_WITH_NO_DISP: u8 = 0;
-const MOD_INDIRECTION_WITH_DISP8: u8 = 1;
-const MOD_INDIRECTION_WITH_DISP32: u8 = 2;
-const MOD_REGI: u8 = 3;
-const REX_W: u8 = 0x48;
-const OPERAND_SIZE_PREFIX16: u8 = 0x66;
-const SLASH_0: usize = 0;
-const SLASH_1: usize = 1;
-const SLASH_2: usize = 2;
-const SLASH_3: usize = 3;
-const SLASH_4: usize = 4;
-const SLASH_5: usize = 5;
-const SLASH_6: usize = 6;
-const SLASH_7: usize = 7;
-
-#[rustfmt::skip]
-const R8_R15: [&'static str; 32] = [
-    "R8",  "R8D",  "R8W",  "R8B",
-    "R9",  "R9D",  "R9W",  "R9B",
-    "R10", "R10D", "R10W", "R10B",
-    "R11", "R11D", "R11W", "R11B",
-    "R12", "R12D", "R12W", "R12B",
-    "R13", "R13D", "R13W", "R13B",
-    "R14", "R14D", "R14W", "R14B",
-    "R15", "R15D", "R15W", "R15B",
-];
-
-#[rustfmt::skip]
-const XMM8_XMM15: [&'static str; 8] = [
-    "XMM8",  "XMM9",  "XMM10", "XMM11",
-    "XMM12", "XMM13", "XMM14", "XMM15",
-];
-
-fn reg_size(name: &str) -> DataSize {
-    match name {
-        "RAX" | "RCX" | "RDX" | "RBX" | "RSP" | "RBP" | "RSI" | "RDI" | "RIP" | "R8'" | "R9'"
-        | "R10" | "R11" | "R12" | "R13" | "R14" | "R15" => DataSize::SuffixQuad,
-        "EAX" | "ECX" | "EDX" | "EBX" | "ESP" | "EBP" | "ESI" | "EDI" | "EIP" | "R8D" | "R9D"
-        | "R10D" | "R11D" | "R12D" | "R13D" | "R14D" | "R15D" => DataSize::SuffixLong,
-        "AX" | "CX" | "DX" | "BX" | "SP" | "BP" | "SI" | "DI" | "IP" | "R8W" | "R9W" | "R10W"
-        | "R11W" | "R12W" | "R13W" | "R14W" | "R15W" => DataSize::SuffixWord,
-        "AL" | "CL" | "DL" | "BL" | "AH" | "CH" | "DH" | "BH" | "SIL" | "DIL" | "SPL" | "BPL"
-        | "R8B" | "R9B" | "R10B" | "R11B" | "R12B" | "R13B" | "R14B" | "R15B" => {
-            DataSize::SuffixByte
-        }
-        _ => panic!("Invalid register name {}", name),
-    }
-}
-
-impl<'a> TryFrom<&'a str> for DataSize {
-    type Error = DataSizeError<'a>;
-
-    /// Predict DataSize from x86_64 register name.
-    /// # Must
-    /// &str to upper case
-    fn try_from(name: &'a str) -> Result<Self, Self::Error> {
-        Ok(match name {
-            "RAX" | "RCX" | "RDX" | "RBX" | "RSP" | "RBP" | "RSI" | "RDI" | "RIP" | "R8'"
-            | "R9'" | "R10" | "R11" | "R12" | "R13" | "R14" | "R15" => DataSize::SuffixQuad,
-
-            "EAX" | "ECX" | "EDX" | "EBX" | "ESP" | "EBP" | "ESI" | "EDI" | "EIP" | "R8D"
-            | "R9D" | "R10D" | "R11D" | "R12D" | "R13D" | "R14D" | "R15D" => DataSize::SuffixLong,
-
-            "AX" | "CX" | "DX" | "BX" | "SP" | "BP" | "SI" | "DI" | "IP" | "R8W" | "R9W"
-            | "R10W" | "R11W" | "R12W" | "R13W" | "R14W" | "R15W" => DataSize::SuffixWord,
-
-            "AL" | "CL" | "DL" | "BL" | "AH" | "CH" | "DH" | "BH" | "SIL" | "DIL" | "SPL"
-            | "BPL" | "R8B" | "R9B" | "R10B" | "R11B" | "R12B" | "R13B" | "R14B" | "R15B" => {
-                DataSize::SuffixByte
-            }
-            _ => return Err(DataSizeError::UnknownRegister(name)),
-        })
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
-enum DataSizeError<'a> {
-    #[error("Invalid register name {0}")]
-    UnknownRegister(&'a str),
-}
-
-impl<'a> Encoder<'a> {
-    pub fn new(l: &'a mut Lexer<'a>, file_name: &'a str) -> Encoder<'a> {
-        let lexer = l.clone();
-        let tok = l.lex().unwrap();
-
-        let default_text_section = Instr {
-            kind: InstrKind::Section,
-            pos: tok.pos.clone(),
-            section: ".text",
-            symbol_type: STT_SECTION,
-            flags: "ax",
-            ..Default::default()
-        };
-        let mut hashmap = HashMap::new();
-        hashmap.insert(".text", vec![default_text_section]);
-
+impl Default for Encoder {
+    fn default() -> Self {
         Self {
-            tok,
-            lexer,
-            current_section: ".text",
-            instrs: hashmap,
+            tokens: Default::default(),
+            token_idx: Default::default(),
+            current_section_name: ".text".to_owned(),
+            instrs: Vec::with_capacity(1500000),
+            user_defined_symbols: Default::default(),
+            user_defined_sections: Default::default(),
         }
     }
+}
 
-    /// call `lexer.lex()` & get next token into Self.
-    fn next(&'a mut self) {
-        self.tok = self.lexer.lex().unwrap();
+fn expect(token_kind: TokenKind, index: &mut usize, tokens: &[Token]) -> Result<()> {
+    let Token { kind, loc } = peek_next(index, tokens)?;
+
+    match token_kind == *kind {
+        true => Ok(()),
+        false => bail!(*loc, "Unexpected token {kind:?}. expected {token_kind:?}",),
     }
+}
 
-    fn expect(&self, exp: TokenKind) {
-        if self.tok.kind != exp {
-            eprintln!("{}", TokenKindError::UnexpectedKind(self.tok.kind.clone()));
-            exit(1);
+fn peek_n(n: usize, tokens: &[Token]) -> Result<&Token> {
+    match tokens.get(n) {
+        Some(token) => Ok(token),
+        None => bail!(
+            tokens[n].loc,
+            "The '{n}'th Token in the Token vector was not found."
+        ),
+    }
+}
+
+fn peek_next<'a>(index: &mut usize, tokens: &'a [Token]) -> Result<&'a Token> {
+    *index += 1;
+    peek_n(*index, tokens)
+}
+
+/// First, index+=1.
+/// 2nd, Parse register from global data. return XMM or general register.
+fn parse_register(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
+    let err_msg = "The next character after `%` must be register.";
+    let current_loc = peek_n(*index, tokens)?.loc;
+
+    *index += 1;
+    let next_token = match peek_n(*index, tokens) {
+        Ok(next) => next,
+        Err(_) => bail!(current_loc, "{err_msg}"),
+    };
+
+    match &next_token.kind {
+        TokenKind::Ident(reg_name) => Ok(match get_xmm_by(&reg_name.to_uppercase()) {
+            Ok(xmm) => Expr::Xmm(xmm),
+            Err(_err) => Expr::Register(get_reg_info_by(&reg_name.to_uppercase())?),
+        }),
+        _ => bail!(current_loc, "{err_msg}"),
+    }
+}
+
+/// Parse Number | Identifier | Unary minus
+fn parse_factor(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
+    let current_token = peek_n(*index, tokens)?;
+    Ok(match &current_token.kind {
+        TokenKind::Number(num) => Expr::Number(num.to_string()),
+        TokenKind::Ident(ident) => Expr::Ident(ident.to_string()),
+        TokenKind::Minus => {
+            *index += 1;
+            Expr::Neg(Box::new(parse_factor(index, tokens)?))
         }
+        _ => bail!(
+            current_token.loc,
+            "Unexpected token kind: {:?}",
+            current_token.kind
+        ),
+    })
+}
+
+/// Parse binary expression
+fn parse_expr(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
+    let left_hs = Box::new(parse_factor(index, tokens)?);
+
+    let current_token = peek_n(*index, tokens)?;
+    Ok(match &current_token.kind {
+        TokenKind::Div | TokenKind::Minus | TokenKind::Mul | TokenKind::Plus => {
+            let op = current_token.kind.clone();
+            *index += 1;
+            let right_hs = Box::new(parse_expr(index, tokens)?);
+            Expr::Binop {
+                left_hs,
+                right_hs,
+                op,
+            }
+        }
+        _ => bail!(
+            current_token.loc,
+            "Unexpected token kind: {:?}",
+            current_token.kind
+        ),
+    })
+}
+
+// fn parse_two_operand(current_token: &Token, token_iter: &mut slice::Iter<'_, Token>)-> Result<Expr>{
+//     let src  = parse_operand(current_token, token_iter)?;
+
+// }
+
+fn parse_indirect(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
+    let kind = &peek_n(*index, tokens)?.kind;
+
+    // - indirect expression
+    //   displacement(base + index, scale)
+    // e.g.         8(rbx + rdi, 8)
+    let expr = match *kind == TokenKind::LParen {
+        // Starting with '(' means displacement is omitted.
+        true => Expr::Number("0".to_owned()),
+        false => parse_expr(index, tokens)?,
+    };
+    if *kind != TokenKind::LParen {
+        return Ok(expr);
+    };
+
+    Ok(match peek_next(index, tokens)?.kind == TokenKind::Comma {
+        true => {
+            let indirect = Expr::Indirection {
+                disp: Some(Box::new(expr)),
+                base: Some(Box::new(parse_register(index, tokens)?)),
+                index: Some(Box::new(parse_register(index, tokens)?)),
+                scale: Some(Box::new(
+                    match peek_next(index, tokens)?.kind == TokenKind::Comma {
+                        true => parse_expr(index, tokens)?,
+                        false => Expr::Number("1".to_owned()),
+                    },
+                )),
+                has_base: false,
+                has_index_scale: false,
+            };
+            expect(TokenKind::RParen, index, tokens)?;
+            indirect
+        }
+        false => Expr::Indirection {
+            disp: Some(Box::new(expr)),
+            base: None,
+            index: None,
+            scale: None,
+            has_base: false,
+            has_index_scale: false,
+        },
+    })
+}
+
+fn parse_operand(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
+    let Token { kind, loc } = peek_n(*index, tokens)?;
+
+    Ok(match &kind {
+        // Dolor is immediate prefix. e.g. $1
+        TokenKind::Dolor => {
+            *index += 1;
+            Expr::Immediate(Box::new(parse_expr(index, tokens)?))
+        }
+        TokenKind::Percent => parse_register(index, tokens)?,
+        TokenKind::Mul => Expr::Star(Box::new(parse_register(index, tokens)?)),
+        TokenKind::LParen => parse_indirect(index, tokens)?,
+        _ => {
+            bail!(*loc, "Unexpected token kind: {kind:?}")
+        }
+    })
+}
+
+pub(crate) fn parse(tokens: Vec<Token>) -> Result<()> {
+    let mut index = 0;
+    dbg!(index);
+    while index <= tokens.len() {
+        dbg!(parse_operand(&mut index, &tokens)?);
+        index += 1;
     }
 
-    // fn parse_register(&mut self) -> Register {
-    //     self.expect(TokenKind::Percent);
-    //     let pos = self.tok.pos.clone();
-    //     let reg_name = self.tok.lit.to_uppercase();
-    //     let size: DataSize = reg_name
-    //         .as_str()
-    //         .try_into()
-    //         .unwrap_or_else(|err| panic!("{}", err));
-
-    //     self.next();
-    //     Register {
-    //         lit: reg_name,
-    //         size,
-    //         pos,
-    //     }
-    // }
+    Ok(())
 }
