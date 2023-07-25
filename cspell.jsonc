@@ -1,12 +1,17 @@
 {
   "words": [
+    "Binop",
     "byteorder",
+    "disp",
     "filesz",
+    "hexdigit",
     "instrs",
     "memsz",
+    "movq",
     "paddr",
     "rela",
     "repr",
+    "rfind",
     "rustfmt",
     "shstrtab",
     "strtab",
