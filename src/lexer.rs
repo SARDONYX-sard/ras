@@ -1,11 +1,11 @@
-//! Simple hand-written assembler lexer
+//! The MIT license (MIT): https://opensource.org/license/mit/
 //!
 //! Copyright 2023 rust-analyzer
-//! MIT license: https://opensource.org/license/mit/
+//!
 //! https://github.com/rust-analyzer/ungrammar/blob/20bc271547bb130f282c704f736e4989743ce332/Cargo.toml#L5
-
+//!
+//! Simple hand-written assembler lexer
 use std::str::Chars;
-
 use crate::error::{bail, Result};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
