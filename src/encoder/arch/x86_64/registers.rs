@@ -10,14 +10,45 @@ pub(crate) struct Register {
     pub(crate) rex_required: bool,
 }
 
+impl Register {
+    pub(crate) fn check_reg_size(&self, size: DataSizeSuffix) -> Result<()> {
+        match self.size == size {
+            true => Ok(()),
+            false => bail!(
+                "invalid size of register for instruction. reg name {}",
+                self.lit
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Copy, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum DataSizeSuffix {
     Byte,
     Word,
     Long,
     Quad,
+    Single,
+    Double,
     #[default]
     Unknown,
+}
+
+impl TryFrom<char> for DataSizeSuffix {
+    type Error = DataSizeSuffix;
+
+    /// char to DataSizeSuffix enum
+    ///
+    /// name: expected 'Q' | 'L' | 'W' | 'B' (else DataSize enum return `Unknown`)
+    fn try_from(name: char) -> Result<Self, Self::Error> {
+        Ok(match name {
+            'Q' => DataSizeSuffix::Quad,
+            'L' => DataSizeSuffix::Long,
+            'W' => DataSizeSuffix::Word,
+            'B' => DataSizeSuffix::Byte,
+            _ => return Err(DataSizeSuffix::Unknown),
+        })
+    }
 }
 
 macro_rules! register_tuple {
@@ -165,12 +196,6 @@ pub(crate) fn get_xmm_by(reg_name: &str) -> Result<Register> {
 mod tests {
     use super::*;
     use pretty_assertions::assert_eq;
-
-    #[test]
-    fn show_registers() {
-        dbg!(GENERAL_REGISTERS);
-        dbg!(XMM_REGISTERS);
-    }
 
     #[test]
     fn should_get_registers() {
