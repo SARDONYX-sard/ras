@@ -1,355 +1,279 @@
-use crate::token::{Position, Token, TokenKind, TokenKindError};
+//! Simple hand-written assembler lexer
+//!
+//! Copyright 2023 rust-analyzer
+//! MIT license: https://opensource.org/license/mit/
+//! https://github.com/rust-analyzer/ungrammar/blob/20bc271547bb130f282c704f736e4989743ce332/Cargo.toml#L5
 
-/// Tokenizer
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Lexer<'a> {
-    /// Current character
-    c: Option<char>,
-    /// Source code of assembly
-    text: &'a str,
-    /// `self.text`'s current position index(0 based index)
-    idx: usize,
-    /// `self.text`'s current position column.(0 based index)
-    col: usize,
-    /// Reading text position
-    pos: Position<'a>,
+use std::str::Chars;
+
+use crate::error::{bail, Result};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TokenKind {
+    /// An identifier
+    Ident(String),
+    /// str literal e.g.: 'hello', "World"
+    Token(String),
+    Number(String),
+    Plus,
+    Mul,
+    Minus,
+    Div,
+    Dolor,
+    Percent,
+    Colon,
+    Comma,
+    LParen,
+    RParen,
 }
 
-impl<'a> Lexer<'a> {
-    /// Tokenize assembly code.
-    /// # Examples
-    /// ```
-    /// use crate::{Lexer, Position, Token, TokenKind};
-    ///        let test_name = "test"
-    ///         let asm_code = r#"
-    ///     # This line is comment. Should be skipped.
-    /// .text
-    /// .global _start
-    /// _start:
-    ///     mov eax, eax
-    ///     lea e, 1
-    /// "#;
-    ///
-    ///         let mut lexer = Lexer::new(test_name, asm_code);
-    ///         assert_eq!(
-    ///             lexer.lex(),
-    ///             Token {
-    ///                 kind: TokenKind::Ident,
-    ///                 pos: Position {
-    ///                     file_name: test_name,
-    ///                     line: 3
-    ///                 },
-    ///                 lit: ".text"
-    ///             }
-    ///         );
-    /// ```
-    pub fn new(file_name: &'a str, text: &'a str) -> Self {
-        let c = match text.is_empty() {
-            true => None,
-            false => text.chars().next(),
-        };
-        Self {
-            c,
-            text,
-            pos: Position {
-                file_name,
-                ..Default::default()
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Token {
+    pub(crate) kind: TokenKind,
+    pub(crate) loc: Location,
+}
+
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq)]
+pub(crate) struct Location {
+    pub(crate) line: usize,
+    pub(crate) column: usize,
+}
+
+impl Location {
+    fn advance(&mut self, text: &str) {
+        match text.rfind('\n') {
+            Some(idx) => {
+                self.line += text.chars().filter(|&it| it == '\n').count();
+                self.column = text[idx + 1..].chars().count();
+            }
+            None => self.column += text.chars().count(),
+        }
+    }
+}
+
+pub(crate) fn tokenize(mut input: &str) -> Result<Vec<Token>> {
+    let mut res = Vec::new();
+    let mut loc = Location::default();
+    while !input.is_empty() {
+        let old_input = input;
+        skip_ws(&mut input);
+        skip_comment(&mut input);
+        if old_input.len() == input.len() {
+            match advance(&mut input) {
+                Ok(kind) => {
+                    res.push(Token { kind, loc });
+                }
+                Err(err) => return Err(err.with_location(loc)),
+            }
+        }
+        let consumed = old_input.len() - input.len();
+        loc.advance(&old_input[..consumed]);
+    }
+
+    Ok(res)
+}
+
+fn skip_ws(input: &mut &str) {
+    *input = input.trim_start_matches(is_whitespace)
+}
+fn skip_comment(input: &mut &str) {
+    if input.starts_with('#') {
+        let idx = input.find('\n').map_or(input.len(), |it| it + 1);
+        *input = &input[idx..]
+    }
+}
+
+fn advance(input: &mut &str) -> Result<TokenKind> {
+    let mut chars = input.chars();
+    let c = chars.next().unwrap();
+    let res = match c {
+        ',' => TokenKind::Comma,
+        '+' => TokenKind::Plus,
+        '-' => TokenKind::Minus,
+        '*' => TokenKind::Mul,
+        '/' => TokenKind::Div,
+        '%' => TokenKind::Percent,
+        '$' => TokenKind::Dolor,
+        ':' => TokenKind::Colon,
+        '(' => TokenKind::LParen,
+        ')' => TokenKind::RParen,
+        '\'' => take_until('\'', &mut chars)?,
+        '\"' => take_until('\"', &mut chars)?,
+        c if c.is_ascii_digit() => {
+            let mut buf = String::new();
+            buf.push(c);
+            loop {
+                match chars.clone().next() {
+                    Some(c) if is_number_char(c) => {
+                        chars.next();
+                        buf.push(c);
+                    }
+                    _ => break,
+                }
+            }
+            TokenKind::Number(buf)
+        }
+        c if is_ident_char(c) => {
+            let mut buf = String::new();
+            buf.push(c);
+            loop {
+                match chars.clone().next() {
+                    Some(c) if is_ident_char(c) => {
+                        chars.next();
+                        buf.push(c);
+                    }
+                    _ => break,
+                }
+            }
+            TokenKind::Ident(buf)
+        }
+        '\r' => bail!("unexpected `\\r`, only Unix-style line endings allowed"),
+        c => bail!("unexpected character: `{}`", c),
+    };
+
+    *input = chars.as_str();
+    Ok(res)
+}
+
+/// Create TokenKind::Token
+fn take_until(ch: char, chars: &mut Chars<'_>) -> Result<TokenKind> {
+    let mut buf = String::new();
+    loop {
+        match chars.next() {
+            None => bail!("unclosed token literal"),
+            Some(c) if ch == c => break,
+            Some('\\') => match chars.next() {
+                Some(c) if is_escapable(c) => buf.push(to_escape_char(c)?),
+                c => bail!("unsupported escape literal. Got {c:?}"),
             },
-            ..Default::default()
+            Some(c) => buf.push(c),
         }
     }
-
-    /// Advance the current character position.  & increment `self.idx`
-    fn advance(&mut self) {
-        self.col += 1;
-        self.idx += 1;
-
-        if self.c == Some('\n') {
-            self.col += 0;
-            self.pos.line += 1;
-        };
-
-        self.c = self.peek(0);
-    }
-
-    /// - If self.text is EOF, returns '\0'.
-    /// - If not, return the `self.idx + n`th `char`.
-    /// - If there is no `self.idx + n`th char, return `None`.
-    fn peek(&self, n: usize) -> Option<char> {
-        match self.text.len() == self.idx + n {
-            true => None,
-            false => self.text.chars().nth(self.idx + n),
-        }
-    }
-
-    fn current_pos(&self) -> Position {
-        self.pos.clone()
-    }
-
-    /// Advance position until the end of the line.
-    fn skip_comment(&mut self) {
-        while self.c != Some('\n') {
-            self.advance();
-        }
-    }
-
-    fn is_hex(&self) -> bool {
-        let next_start_with_0x = || {
-            (self.c == Some('0'))
-                && (matches!(self.text.chars().nth(self.idx + 1), Some('x') | Some('X')))
-        };
-        let is_code_end = self.text.len() == self.idx + 1;
-
-        match is_code_end {
-            true => false, // Obvious: EOF is not a hex.
-            false => next_start_with_0x(),
-        }
-    }
-
-    /// Advance position until digit.
-    fn read_number(&mut self) -> Token {
-        // Copy the starting point here because the advance method increments self.idx.
-        let start = self.idx;
-
-        match self.is_hex() {
-            true => {
-                // consume "0x"
-                self.advance(); // consume '0'
-                self.advance(); // consume 'x'
-
-                while Some(true) == self.c.map(|c| c.is_ascii_hexdigit()) {
-                    self.advance();
-                }
-            }
-            false => {
-                while Some(true) == self.c.map(|c| c.is_ascii_digit()) {
-                    self.advance();
-                }
-            }
-        };
-
-        Token {
-            lit: &self.text[start..self.idx],
-            kind: TokenKind::Number,
-            pos: self.current_pos(),
-        }
-    }
-
-    /// Advance position until is_ident is true.
-    /// # Note
-    /// This method recognizes a decimal number as `TokenKind::Ident` even if it comes first.
-    ///
-    /// e.g. `01ident` -> `TokenKind::Ident`
-    ///
-    /// Therefore, users need to parse numbers with this in mind.
-    fn read_ident(&mut self) -> Token {
-        fn is_ident(c: char) -> bool {
-            c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '$')
-        }
-
-        let start = self.idx;
-
-        while Some(true) == self.c.map(is_ident) {
-            self.advance();
-        }
-
-        Token {
-            lit: &self.text[start..self.idx],
-            kind: TokenKind::Ident,
-            pos: self.current_pos(),
-        }
-    }
-
-    /// Advance position until next `"`.
-    fn read_string(&mut self) -> Token {
-        let start = self.idx;
-
-        while Some(false) == self.c.map(|c| matches!(c, '"')) {
-            self.advance();
-        }
-
-        Token {
-            lit: &self.text[start..self.idx],
-            kind: TokenKind::String,
-            pos: self.current_pos(),
-        }
-    }
-
-    /// Determine the token type from the given characters
-    /// and create and return a Token structure along with the current position.
-    fn single_letter_token(&mut self, c: char) -> Result<Token, TokenKindError> {
-        self.advance();
-        let kind: TokenKind = c.try_into()?;
-
-        Ok(Token {
-            lit: kind.clone().try_into()?,
-            kind,
-            pos: self.current_pos(),
-        })
-    }
-
-    pub fn lex(&mut self) -> Result<Token, LexerError> {
-        while let Some(c) = self.c {
-            // non return matches
-            match c {
-                c if c.is_whitespace() => {
-                    self.advance();
-                    continue;
-                }
-                '#' => {
-                    self.skip_comment();
-                    continue;
-                }
-                _ => {}
-            };
-
-            return Ok(match c {
-                    '0'..='9' => self.read_number(),
-                    'A'..='Z' | 'a'..='z' | '_' | '.' => self.read_ident(),
-                    '"' => self.read_string(),
-                    ',' | ':' | '(' | ')' | '+' | '-' | '*' | '/' | '$' | '%' => {
-                        self.single_letter_token(c)
-                        .expect("Non error. Reason: We are filtering out failed cast characters before calling this method.")
-                    }
-                    _ => return Err(LexerError::UnexpectedToken(c, self.current_pos())),
-                });
-        }
-
-        Ok(Token {
-            lit: "\0",
-            kind: TokenKind::Eof,
-            pos: self.current_pos(),
-        })
-    }
-
-    pub fn to_vec(&mut self) -> Result<Vec<Token>, LexerError> {
-        let mut res = Vec::new();
-        while let Some(c) = self.c {
-            // non return matches
-            match c {
-                c if c.is_whitespace() => {
-                    self.advance();
-                    continue;
-                }
-                '#' => {
-                    self.skip_comment();
-                    continue;
-                }
-                _ => {}
-            };
-
-            let tok =match c {
-                    '0'..='9' => self.read_number(),
-                    'A'..='Z' | 'a'..='z' | '_' | '.' => self.read_ident(),
-                    '"' => self.read_string(),
-                    ',' | ':' | '(' | ')' | '+' | '-' | '*' | '/' | '$' | '%' => {
-                        self.single_letter_token(c)
-                        .expect("Non error. Reason: We are filtering out failed cast characters before calling this method.")
-                    }
-                    _ => return Err(LexerError::UnexpectedToken(c, self.current_pos())),
-                };
-        }
-
-        res.push(Token {
-            lit: "\0",
-            kind: TokenKind::Eof,
-            pos: self.current_pos(),
-        });
-
-        Ok(res)
-    }
+    Ok(TokenKind::Token(buf))
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, thiserror::Error)]
-pub enum LexerError<'a> {
-    #[error("Unexpected token {0}. {1}")]
-    UnexpectedToken(char, Position<'a>),
+fn to_escape_char(c: char) -> Result<char> {
+    Ok(match c {
+        '\'' => '\'',
+        '"' => '\"',
+        '\\' => '\\',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        '0' => '\0',
+        c => bail!("invalid escape character. Got {c}"),
+    })
+}
+fn is_escapable(c: char) -> bool {
+    matches!(c, '\'' | '"' | '\\' | 'n' | 'r' | 't' | '0')
+}
+fn is_whitespace(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n')
+}
+fn is_ident_char(c: char) -> bool {
+    matches!(c, 'a'..='z' | 'A'..='Z' | '_' | '.')
+}
+fn is_number_char(c: char) -> bool {
+    c.is_ascii_hexdigit()
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::error::Result;
+    use crate::lexer::{tokenize, Location, Token, TokenKind};
     use pretty_assertions::assert_eq;
 
-    use crate::{
-        lexer::Lexer,
-        token::{Position, Token, TokenKind, TokenKindError},
-    };
-
     #[test]
-    fn should_tokenize_str() {
-        let asm_code = r#"
-    # This line is comment. Should be skipped.
+    fn debug_tokenize() -> Result<()> {
+        let asm_code = r#"# This line is comment. Should be skipped.
 .text
 .global _start
 _start:
     mov eax, eax
-    lea e, 1
+    lea e, 0x10
 "#;
 
-        let mut lexer = Lexer::new(Default::default(), asm_code);
+        let actual = tokenize(asm_code)?;
         assert_eq!(
-            lexer.lex(),
-            Ok(Token {
-                lit: ".text",
-                kind: TokenKind::Ident,
-                pos: Position {
-                    line: 3,
-                    ..Default::default()
+            vec![
+                Token {
+                    kind: TokenKind::Ident(".text".to_owned()),
+                    loc: Location { line: 1, column: 0 },
                 },
-            })
-        );
-    }
-
-    #[test]
-    fn should_tokenize_number() {
-        let asm_code = "0x16";
-        let mut lexer = Lexer::new(Default::default(), asm_code);
-        assert_eq!(
-            lexer.lex(),
-            Ok(Token {
-                lit: "0x16",
-                kind: TokenKind::Number,
-                pos: Position {
-                    line: 1,
-                    ..Default::default()
+                Token {
+                    kind: TokenKind::Ident(".global".to_owned()),
+                    loc: Location { line: 2, column: 0 },
                 },
-            })
-        );
-
-        let asm_code = "16 x016";
-        let mut lexer = Lexer::new(Default::default(), asm_code);
-        assert_eq!(
-            lexer.lex(),
-            Ok(Token {
-                lit: "16",
-                kind: TokenKind::Number,
-                pos: Position {
-                    line: 1,
-                    ..Default::default()
+                Token {
+                    kind: TokenKind::Ident("_start".to_owned()),
+                    loc: Location { line: 2, column: 8 },
                 },
-            })
+                Token {
+                    kind: TokenKind::Ident("_start".to_owned()),
+                    loc: Location { line: 3, column: 0 },
+                },
+                Token {
+                    kind: TokenKind::Colon,
+                    loc: Location { line: 3, column: 6 },
+                },
+                Token {
+                    kind: TokenKind::Ident("mov".to_owned()),
+                    loc: Location { line: 4, column: 4 },
+                },
+                Token {
+                    kind: TokenKind::Ident("eax".to_owned()),
+                    loc: Location { line: 4, column: 8 },
+                },
+                Token {
+                    kind: TokenKind::Comma,
+                    loc: Location {
+                        line: 4,
+                        column: 11,
+                    },
+                },
+                Token {
+                    kind: TokenKind::Ident("eax".to_owned()),
+                    loc: Location {
+                        line: 4,
+                        column: 13,
+                    },
+                },
+                Token {
+                    kind: TokenKind::Ident("lea".to_owned()),
+                    loc: Location { line: 5, column: 4 },
+                },
+                Token {
+                    kind: TokenKind::Ident("e".to_owned()),
+                    loc: Location { line: 5, column: 8 },
+                },
+                Token {
+                    kind: TokenKind::Comma,
+                    loc: Location { line: 5, column: 9 },
+                },
+                Token {
+                    kind: TokenKind::Number("0".to_owned()),
+                    loc: Location {
+                        line: 5,
+                        column: 11,
+                    },
+                },
+                Token {
+                    kind: TokenKind::Ident("x".to_owned()),
+                    loc: Location {
+                        line: 5,
+                        column: 12,
+                    },
+                },
+                Token {
+                    kind: TokenKind::Number("10".to_owned()),
+                    loc: Location {
+                        line: 5,
+                        column: 13,
+                    },
+                },
+            ],
+            actual
         );
-    }
-
-    #[test]
-    fn should_cast_known_char() {
-        let mut lexer = Lexer::default();
-        assert_eq!(
-            lexer.single_letter_token('%'),
-            Ok(Token {
-                lit: "%",
-                kind: TokenKind::Percent,
-                pos: Position::default(),
-            })
-        );
-    }
-
-    #[test]
-    fn should_err_cast_unknown_char() {
-        let mut lexer = Lexer::default();
-        assert_eq!(
-            lexer.single_letter_token('c'),
-            Err(TokenKindError::UnexpectedChar('c'))
-        );
+        Ok(())
     }
 }
