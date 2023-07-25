@@ -5,6 +5,12 @@ use crate::{
     utils::any_as_u8_slice,
 };
 
+use super::constants::{
+    R_X86_64_16, R_X86_64_32, R_X86_64_32S, R_X86_64_64, R_X86_64_8, R_X86_64_PC32, SHF_INFO_LINK,
+    SHT_NULL, SHT_PROGBITS, SHT_RELA, SHT_STRTAB, SHT_SYMTAB, STB_GLOBAL, STB_LOCAL, STT_NOTYPE,
+    STT_SECTION,
+};
+
 #[derive(Clone, Debug, Default)]
 pub struct Elf<'a> {
     out_file: &'a str,
@@ -109,63 +115,6 @@ struct Elf64Phdr {
     // padding: u64, // End of Program Header (size).
 }
 
-pub const STB_LOCAL: u8 = 0;
-pub const STB_GLOBAL: u8 = 1;
-
-pub const STT_NOTYPE: u8 = 0;
-pub const STT_OBJECT: u8 = 1;
-pub const STT_FUNC: u8 = 2;
-pub const STT_SECTION: u8 = 3;
-pub const STT_FILE: u8 = 4;
-pub const STT_COMMON: u8 = 5;
-pub const STT_TLS: u8 = 6;
-pub const STT_RELC: u8 = 8;
-pub const STT_SRELC: u8 = 9;
-pub const STT_LOOS: u8 = 10;
-pub const STT_HIOS: u8 = 12;
-pub const STT_LOPROC: u8 = 13;
-pub const STT_HIPROC: u8 = 14;
-
-pub const SHT_NULL: u32 = 0;
-pub const SHT_PROGBITS: u32 = 1;
-pub const SHT_SYMTAB: u32 = 2;
-pub const SHT_STRTAB: u32 = 3;
-pub const SHT_RELA: u32 = 4;
-
-pub const SHF_WRITE: u64 = 0x1;
-pub const SHF_ALLOC: u64 = 0x2;
-pub const SHF_EXECINSTR: u64 = 0x4;
-pub const SHF_MERGE: u64 = 0x10;
-pub const SHF_STRINGS: u64 = 0x20;
-pub const SHF_INFO_LINK: u64 = 0x40;
-pub const SHF_LINK_ORDER: u64 = 0x80;
-pub const SHF_OS_NONCONFORMING: u64 = 0x100;
-pub const SHF_GROUP: u64 = 0x200;
-pub const SHF_TLS: u64 = 0x400;
-
-pub const R_X86_64_NONE: u64 = 0;
-pub const R_X86_64_64: u64 = 1;
-pub const R_X86_64_PC32: u64 = 2;
-pub const R_X86_64_GOT32: u64 = 3;
-pub const R_X86_64_PLT32: u64 = 4;
-pub const R_X86_64_COPY: u64 = 5;
-pub const R_X86_64_GLOB_DAT: u64 = 6;
-pub const R_X86_64_JUMP_SLOT: u64 = 7;
-pub const R_X86_64_RELATIVE: u64 = 8;
-pub const R_X86_64_GOTPCREL: u64 = 9;
-pub const R_X86_64_32: u64 = 10;
-pub const R_X86_64_32S: u64 = 11;
-pub const R_X86_64_16: u64 = 12;
-pub const R_X86_64_PC16: u64 = 13;
-pub const R_X86_64_8: u64 = 14;
-pub const R_X86_64_PC8: u64 = 15;
-pub const R_X86_64_PC64: u64 = 24;
-
-pub const STV_DEFAULT: u8 = 0;
-pub const STV_INTERNAL: u8 = 1;
-pub const STV_HIDDEN: u8 = 2;
-pub const STV_PROTECTED: u8 = 3;
-
 impl<'a> Elf<'a> {
     pub fn new(out_file: &'a str, keep_locals: bool) -> Self {
         let mut e = Self {
@@ -214,7 +163,7 @@ impl Elf<'_> {
                 .insert(symbol_name.clone(), self.symtab_symbol_indexes.len());
 
             *off += string.len() + 1;
-            let st_shndx = self.user_defined_section_idx[symbol.section] as u16;
+            let st_shndx = self.user_defined_section_idx[&symbol.section] as u16;
             let st_name = if symbol.symbol_type == STT_SECTION {
                 0
             } else {
@@ -280,15 +229,15 @@ impl Elf<'_> {
                 continue;
             }
 
-            if let Some(s) = USER_DEFINED_SYMBOLS.lock().unwrap().get(r.uses) {
+            if let Some(s) = USER_DEFINED_SYMBOLS.lock().unwrap().get(&r.uses) {
                 if s.binding == STB_GLOBAL {
-                    index = self.symtab_symbol_indexes[r.uses];
+                    index = self.symtab_symbol_indexes[&r.uses];
                 } else {
                     r_addend += s.addr as i64;
-                    index = self.symtab_symbol_indexes[s.section];
+                    index = self.symtab_symbol_indexes[&s.section];
                 }
             } else {
-                index = self.symtab_symbol_indexes[r.uses];
+                index = self.symtab_symbol_indexes[&r.uses];
             }
 
             let rela_section_name = format!(".rela{}", r.instr.section);
@@ -310,7 +259,11 @@ impl Elf<'_> {
     pub fn collect_rela_symbols(&mut self) {
         for rela in RELA_TEXT_USERS.lock().unwrap().clone() {
             if !self.rela_symbols.contains(&rela.uses.to_owned()) {
-                if USER_DEFINED_SYMBOLS.lock().unwrap().contains_key(rela.uses) {
+                if USER_DEFINED_SYMBOLS
+                    .lock()
+                    .unwrap()
+                    .contains_key(&rela.uses)
+                {
                     continue;
                 }
                 self.rela_symbols.push(rela.uses.to_string());
