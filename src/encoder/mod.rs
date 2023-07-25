@@ -3,11 +3,12 @@
 pub mod arch;
 
 use self::arch::x86_64::{
-    instructions::InstrKind,
-    registers::{get_reg_info_by, get_xmm_by},
+    bin_const::OPERAND_SIZE_PREFIX16,
+    instructions::{self, InstrKind},
+    registers::{get_reg_info_by, get_xmm_by, DataSizeSuffix, Register},
     Expr,
 };
-use crate::error::{bail, Result};
+use crate::error::{self, bail, Result};
 use crate::lexer::{Location, Token, TokenKind};
 use std::collections::HashMap;
 
@@ -59,6 +60,7 @@ pub struct Encoder {
     tokens: Vec<Token>,
     token_idx: usize,
     current_section_name: String,
+    current_instr: Instr,
     /// All instructions, sections, symbols, directives
     instrs: Vec<Instr>,
     user_defined_symbols: HashMap<String, Instr>,
@@ -70,6 +72,7 @@ impl Default for Encoder {
         Self {
             tokens: Default::default(),
             token_idx: Default::default(),
+            current_instr: Default::default(),
             current_section_name: ".text".to_owned(),
             instrs: Vec::with_capacity(1500000),
             user_defined_symbols: Default::default(),
@@ -78,9 +81,14 @@ impl Default for Encoder {
     }
 }
 
+/// Next token is matched by 1st arg?
+///
+/// # Parameters:
+/// - `token_kind`: expected tokenKind
+/// - `index`: current index for tokens. This index is incremented.
+/// - `tokens`: list of tokens
 fn expect(token_kind: TokenKind, index: &mut usize, tokens: &[Token]) -> Result<()> {
     let Token { kind, loc } = peek_next(index, tokens)?;
-
     match token_kind == *kind {
         true => Ok(()),
         false => bail!(*loc, "Unexpected token {kind:?}. expected {token_kind:?}",),
@@ -165,10 +173,13 @@ fn parse_expr(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
     })
 }
 
-// fn parse_two_operand(current_token: &Token, token_iter: &mut slice::Iter<'_, Token>)-> Result<Expr>{
-//     let src  = parse_operand(current_token, token_iter)?;
-
-// }
+/// Parse e.g. (movq `rsi, rdi` )
+fn parse_two_operand(index: &mut usize, tokens: &[Token]) -> Result<(Expr, Expr)> {
+    let src = parse_operand(index, tokens)?;
+    expect(TokenKind::Comma, index, tokens)?;
+    let dst = parse_operand(index, tokens)?;
+    Ok((src, dst))
+}
 
 fn parse_indirect(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
     let kind = &peek_n(*index, tokens)?.kind;
@@ -230,6 +241,114 @@ fn parse_operand(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
             bail!(*loc, "Unexpected token kind: {kind:?}")
         }
     })
+}
+
+fn eval_expr_get_symbol_64(expr: Expr, arr: &mut Vec<String>) -> Result<i64> {
+    Ok(match expr {
+        Expr::Number(string) => match string.parse::<i64>() {
+            Ok(int) => int,
+            Err(_) => error::bail!("Failed to parse number"),
+        },
+        Expr::Binop {
+            left_hs,
+            right_hs,
+            op,
+        } => match op {
+            TokenKind::Plus => {
+                eval_expr_get_symbol_64(*left_hs, arr)? + eval_expr_get_symbol_64(*right_hs, arr)?
+            }
+            TokenKind::Minus => {
+                eval_expr_get_symbol_64(*left_hs, arr)? - eval_expr_get_symbol_64(*right_hs, arr)?
+            }
+            TokenKind::Mul => {
+                eval_expr_get_symbol_64(*left_hs, arr)? * eval_expr_get_symbol_64(*right_hs, arr)?
+            }
+            TokenKind::Div => {
+                eval_expr_get_symbol_64(*left_hs, arr)? / eval_expr_get_symbol_64(*right_hs, arr)?
+            }
+            _ => error::bail!("Unimplemented yet!"),
+        },
+        Expr::Ident(ident) => {
+            arr.push(ident);
+            0
+        }
+        Expr::Neg(num_stmt) => -eval_expr_get_symbol_64(*num_stmt, arr)?,
+        Expr::Immediate(stmt) => eval_expr_get_symbol_64(*stmt, arr)?,
+        _ => unimplemented!(),
+    })
+}
+
+fn eval_expr(expr: Expr) -> Result<i32> {
+    let mut arr = Vec::new();
+    Ok(eval_expr_get_symbol_64(expr, &mut arr)? as i32)
+}
+
+/// The 4-bit regions are called REX.w, REX.r, REX.x, and REX.b, in order from bit 3 to 0.
+///
+/// |7|6|5|4|  3  |  2  |  1  |  0  |
+/// |-|-|-|-|-----|-----|-----|-----|
+/// |0|1|0|0|REX.w|REX.r|REX.x|REX.b|
+/// - REX.w - 1 = operand size to 64 bits
+/// - REX.r - functions as bit 4 in the reg field of ModR/M.
+/// - REX.x - Functions as bit 4 in the index field of the SIB byte.
+/// - REX.b - functions as bit 4 in the r/m field of ModR/M and the base field of SIB byte.
+///
+/// See:
+/// - eng: https://wiki.osdev.org/X86-64_Instruction_Encoding#REX_prefix
+/// - jp: https://www.wdic.org/w/SCI/REX%E3%83%97%E3%83%AA%E3%83%95%E3%82%A3%E3%83%83%E3%82%AF%E3%82%B9
+fn rex(w: u8, r: u8, x: u8, b: u8) -> u8 {
+    64 | (w << 3) | (r << 2) | (x << 1) | b
+}
+
+impl Encoder {
+    fn add_prefix(
+        &mut self,
+        reg_r: Register,
+        reg_i: Register,
+        reg_b: Register,
+        sizes: &[DataSizeSuffix],
+    ) {
+        let w = match sizes.contains(&DataSizeSuffix::Quad) {
+            true => 1,
+            false => 0,
+        };
+        // need rex prefix R8~ registers.
+        let r = match reg_r.base_offset >= 8 {
+            true => 1,
+            false => 0,
+        };
+        let x = match reg_i.base_offset >= 8 {
+            true => 1,
+            false => 0,
+        };
+
+        let b = match reg_b.base_offset >= 8 {
+            true => 1,
+            false => 0,
+        };
+
+        if sizes.contains(&DataSizeSuffix::Word) {
+            self.current_instr.code.push(OPERAND_SIZE_PREFIX16);
+        };
+        if sizes.contains(&DataSizeSuffix::Single) {
+            self.current_instr.code.push(0xf3);
+        };
+        if sizes.contains(&DataSizeSuffix::Double) {
+            self.current_instr.code.push(0xf2);
+        }
+
+        if w != 0 || r != 0 || b != 0 || x != 0 || reg_r.rex_required || reg_b.rex_required {
+            self.current_instr.code.push(rex(w, r, x, b));
+        }
+    }
+}
+
+fn align_to(n: i32, align: i32) -> i32 {
+    (n + align - 1) / align * align
+}
+
+fn compose_mod_rm(r#mod: u8, reg_op: u8, rm: u8) -> u8 {
+    (r#mod << 6) + (reg_op << 3) + rm
 }
 
 pub(crate) fn parse(tokens: Vec<Token>) -> Result<()> {
