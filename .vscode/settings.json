@@ -41,8 +41,11 @@
     "MD033": false,
     "no-hard-tabs": false
   },
+  "files.autoSaveDelay": 10000,
+  "files.autoSave": "off",
   "rust-analyzer.check.command": "clippy",
   "rust-analyzer.inlayHints.lifetimeElisionHints.enable": "skip_trivial",
   "rust-analyzer.inlayHints.lifetimeElisionHints.useParameterNames": true,
-  "rust-analyzer.rustfmt.rangeFormatting.enable": true
+  "rust-analyzer.rustfmt.rangeFormatting.enable": false,
+  "rust-analyzer.linkedProjects": [".\\Cargo.toml", ".\\Cargo.toml"]
 }
