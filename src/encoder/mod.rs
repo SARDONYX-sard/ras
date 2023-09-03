@@ -2,9 +2,9 @@
 // mod stack_op;
 pub mod arch;
 
-use self::arch::x86_64::{
+use crate::encoder::arch::x86_64::{
     bin_const::OPERAND_SIZE_PREFIX16,
-    instructions::{self, InstrKind},
+    instructions::InstrKind,
     registers::{get_reg_info_by, get_xmm_by, DataSizeSuffix, Register},
     Expr,
 };
@@ -33,7 +33,7 @@ pub struct Instr {
     /// STV_DEFAULT, STV_INTERNAL, STV_HIDDEN, STV_PROTECTED
     pub(crate) visibility: u8,
     pub(crate) symbol_type: u8,
-    pub(crate) section: String,
+    pub(crate) section_name: String,
     pub(crate) is_jmp_or_call: bool,
     pub(crate) loc: Location,
 }
@@ -113,22 +113,19 @@ fn peek_next<'a>(index: &mut usize, tokens: &'a [Token]) -> Result<&'a Token> {
 /// First, index+=1.
 /// 2nd, Parse register from global data. return XMM or general register.
 fn parse_register(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
-    let err_msg = "The next character after `%` must be register.";
+    // Collect valid location information before the index changes with the peek_next function for error reporting.
     let current_loc = peek_n(*index, tokens)?.loc;
 
-    *index += 1;
-    let next_token = match peek_n(*index, tokens) {
-        Ok(next) => next,
-        Err(_) => bail!(current_loc, "{err_msg}"),
-    };
-
-    match &next_token.kind {
-        TokenKind::Ident(reg_name) => Ok(match get_xmm_by(&reg_name.to_uppercase()) {
+    Ok(match &peek_next(index, tokens)?.kind {
+        TokenKind::Ident(reg_name) => match get_xmm_by(&reg_name.to_uppercase()) {
             Ok(xmm) => Expr::Xmm(xmm),
             Err(_err) => Expr::Register(get_reg_info_by(&reg_name.to_uppercase())?),
-        }),
-        _ => bail!(current_loc, "{err_msg}"),
-    }
+        },
+        _ => bail!(
+            current_loc,
+            "The next character after `%` must be register."
+        ),
+    })
 }
 
 /// Parse Number | Identifier | Unary minus
@@ -143,7 +140,7 @@ fn parse_factor(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
         }
         _ => bail!(
             current_token.loc,
-            "Unexpected token kind: {:?}",
+            "Unexpected token kind: {:?}. Expected: Number|Identifier|Unary minus",
             current_token.kind
         ),
     })
@@ -167,7 +164,7 @@ fn parse_expr(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
         }
         _ => bail!(
             current_token.loc,
-            "Unexpected token kind: {:?}",
+            "Unexpected token kind: {:?}. Expected: Binary expression",
             current_token.kind
         ),
     })
@@ -237,9 +234,10 @@ fn parse_operand(index: &mut usize, tokens: &[Token]) -> Result<Expr> {
         TokenKind::Percent => parse_register(index, tokens)?,
         TokenKind::Mul => Expr::Star(Box::new(parse_register(index, tokens)?)),
         TokenKind::LParen => parse_indirect(index, tokens)?,
-        _ => {
-            bail!(*loc, "Unexpected token kind: {kind:?}")
-        }
+        _ => bail!(
+            *loc,
+            "Unexpected token kind: {kind:?}. Expected: Immediate|Register|Multiply|Indirect"
+        ),
     })
 }
 
@@ -266,7 +264,7 @@ fn eval_expr_get_symbol_64(expr: Expr, arr: &mut Vec<String>) -> Result<i64> {
             TokenKind::Div => {
                 eval_expr_get_symbol_64(*left_hs, arr)? / eval_expr_get_symbol_64(*right_hs, arr)?
             }
-            _ => error::bail!("Unimplemented yet!"),
+            unknown_op => error::bail!("Unimplemented {unknown_op:?} yet!"),
         },
         Expr::Ident(ident) => {
             arr.push(ident);
@@ -313,19 +311,9 @@ impl Encoder {
             false => 0,
         };
         // need rex prefix R8~ registers.
-        let r = match reg_r.base_offset >= 8 {
-            true => 1,
-            false => 0,
-        };
-        let x = match reg_i.base_offset >= 8 {
-            true => 1,
-            false => 0,
-        };
-
-        let b = match reg_b.base_offset >= 8 {
-            true => 1,
-            false => 0,
-        };
+        let r = if reg_r.base_offset >= 8 { 1 } else { 0 };
+        let x = if reg_i.base_offset >= 8 { 1 } else { 0 };
+        let b = if reg_b.base_offset >= 8 { 1 } else { 0 };
 
         if sizes.contains(&DataSizeSuffix::Word) {
             self.current_instr.code.push(OPERAND_SIZE_PREFIX16);
