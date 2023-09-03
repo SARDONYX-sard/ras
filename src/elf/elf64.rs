@@ -163,7 +163,7 @@ impl Elf<'_> {
                 .insert(symbol_name.clone(), self.symtab_symbol_indexes.len());
 
             *off += string.len() + 1;
-            let st_shndx = self.user_defined_section_idx[&symbol.section] as u16;
+            let st_shndx = self.user_defined_section_idx[&symbol.section_name] as u16;
             let st_name = if symbol.symbol_type == STT_SECTION {
                 0
             } else {
@@ -234,13 +234,13 @@ impl Elf<'_> {
                     index = self.symtab_symbol_indexes[&r.uses];
                 } else {
                     r_addend += s.addr as i64;
-                    index = self.symtab_symbol_indexes[&s.section];
+                    index = self.symtab_symbol_indexes[&s.section_name];
                 }
             } else {
                 index = self.symtab_symbol_indexes[&r.uses];
             }
 
-            let rela_section_name = format!(".rela{}", r.instr.section);
+            let rela_section_name = format!(".rela{}", r.instr.section_name);
             self.rela
                 .entry(rela_section_name.clone())
                 .or_insert_with(Vec::new)
