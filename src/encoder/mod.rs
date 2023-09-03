@@ -339,6 +339,37 @@ fn compose_mod_rm(r#mod: u8, reg_op: u8, rm: u8) -> u8 {
     (r#mod << 6) + (reg_op << 3) + rm
 }
 
+impl Encoder {
+    fn encode_instr(&mut self, index: &mut usize, tokens: &[Token]) -> Result<()> {
+        let Token { kind, loc } = peek_n(*index, tokens)?;
+        let instr_name = match kind {
+            TokenKind::Ident(ident) => ident,
+            _ => bail!(*loc, "invalid"),
+        };
+
+        if *kind == TokenKind::Colon {
+            let instr = Instr {
+                kind: InstrKind::Label,
+                loc: *loc,
+                section_name: self.current_section_name.to_string(),
+                symbol_name: instr_name.to_string(),
+                ..Default::default()
+            };
+
+            expect(TokenKind::Colon, index, tokens)?;
+            if self.user_defined_symbols.contains_key(instr_name) {
+                bail!(*loc, "symbol {instr_name} is already defined");
+            }
+
+            self.user_defined_symbols
+                .insert(instr_name.to_string(), instr.clone());
+            self.instrs.push(instr);
+            return Ok(());
+        }
+        Ok(())
+    }
+}
+
 pub(crate) fn parse(tokens: Vec<Token>) -> Result<()> {
     let mut index = 0;
     dbg!(index);
