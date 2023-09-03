@@ -1,7 +1,7 @@
 use crate::error::{bail, Result};
 use seq_macro::seq;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Register {
     pub(crate) lit: &'static str,
     pub(crate) size: DataSizeSuffix,
@@ -172,22 +172,20 @@ const XMM_REGISTERS: [(&str, Register); 16] = [
 ];
 });
 
-/// Get(Copy) general register from GENERAL global const by register name.
+/// Get(Copy) general register info from GENERAL global const by register name.
 pub(crate) fn get_reg_info_by(reg_name: &str) -> Result<Register> {
-    let e = GENERAL_REGISTERS
-        .into_iter()
-        .find(|(reg, _)| reg == &reg_name);
+    let e = GENERAL_REGISTERS.iter().find(|(reg, _)| reg == &reg_name);
     match e {
-        Some(v) => Ok(v.1),
+        Some(v) => Ok(v.1.clone()),
         None => bail!("No such general purpose register could be found."),
     }
 }
 
-/// Get(Copy) XMM register from XMM global const by register name.
+/// Get(Copy) XMM register info from XMM global const by register name.
 pub(crate) fn get_xmm_by(reg_name: &str) -> Result<Register> {
-    let e = XMM_REGISTERS.into_iter().find(|(reg, _)| reg == &reg_name);
+    let e = XMM_REGISTERS.iter().find(|(reg, _)| *reg == reg_name);
     match e {
-        Some(v) => Ok(v.1),
+        Some(v) => Ok(v.1.clone()),
         None => bail!("Not such XMM register could be found."),
     }
 }
